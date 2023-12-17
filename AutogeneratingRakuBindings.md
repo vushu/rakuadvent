@@ -2,19 +2,23 @@
 
 #### Preface
 For this advent post I will tell you about how I got into raku and my struggles of making raylib-raku bindings.
+I already have some knowledge about C, which helped me tremendously when making the bindings.
+I didn't explain much about C [passing by value or passing by reference](https://www.geeksforgeeks.org/difference-between-call-by-value-and-call-by-reference/).
+So I suggest learning a bit of C if you are more interested.
 
-This post also contain stuff about C memory management which I didn't explain. I suggest learning a bit of C if interested.
+#### Encountering Raku
+I discovered Raku by coincedence in a [youtube video](https://www.youtube.com/watch?v=UVUjnzpQKUo&t=289s) and I got intrigued by how expressive it is.
+While reading through the docs, the feature that caught my eye was the first class support for grammars!
+Trying out the grammar was very intuitive if you have worked with some parser generator where [EBNF](https://en.wikipedia.org/wiki/Extended_Backus%E2%80%93Naur_form) is used, then it should be quite similar.
+I will definitely make a toy compiler/interpreter using Raku at some point.
+Before doing that I wanted to make a chip-8 emulator in Raku and want [Raylib](https://github.com/raysan5/raylib) for rendering since I have used it before.
+Sadly there was no bindings for it in raku, but then maybe I could make the bindings?
 
-#### Story time
-I discovered Raku by sheer coincedence and got intrigued that it has first class support for grammars.
-Trying out the grammar was very intuitive and easy, if you have ever tried using [EBNF](https://en.wikipedia.org/wiki/Extended_Backus%E2%80%93Naur_form) then it should feel similar.
-
-I started on making a chip-8 emulator in raku and want [Raylib](https://github.com/raysan5/raylib) for rendering. Sadly nobody at the time have made any bindings for raku, and I think I know why.
-
-So I began reading through the docs for creating the bindings using raku [nativecall](https://docs.raku.org/language/nativecall).
+#### Making native bindings
+So I got a bit sidetracked from making the emulator and began reading through the docs for creating the bindings using Raku [NativeCall](https://docs.raku.org/language/nativecall).
 I began translating some simple functions in raylib.h to to raku nativecall, my first attempt was something like this:
 
-```raku
+```php
 use NativeCall;
 
 constant LIBRAYLIB = 'libraylib.so';
@@ -47,18 +51,16 @@ Yay we got a window!
 
 ![First window](first-window.png)
 
-But something is clearly off, the background wasn't white 
-as I defined it to be.
-
+But something is clearly off, the background wasn't white as I defined it to be.
 I turns out that `ClearBackground` expects `Color` as value type as shown below:
 ```
 RLAPI void ClearBackground(Color color);       
 ```
 
-The problem is Raku only supports passing arguments as pointer!
+The problem is Raku NativeCall only supports passing as reference!
 
-After asking the community for guidens I got the solution which is to pointerize the function, meaning we need to make a new wrapper function example:   
-`ClearBackground_pointerized(Color* color)` which takes Color as a pointer and then call the original function with the dereferenced value:
+After asking the community for guidens, I got the solution to pointerize the function, 
+meaning we need to make a new wrapper function example: `ClearBackground_pointerized(Color* color)` which takes Color as a pointer and then call the original function with the dereferenced value:
 
 ```c
 void ClearBackground_pointerized(Color* color)
@@ -66,8 +68,8 @@ void ClearBackground_pointerized(Color* color)
      ClearBackground(*color);
 }
 ```
-Since Color must be pointer we need to allocate it on the heap so we need be [malloc](https://en.wikipedia.org/wiki/C_dynamic_memory_allocation) Color.
-We create a malloc function in c to be able to do this.
+Since Color must be pointer we need to allocate it on the heap using C's [malloc](https://en.wikipedia.org/wiki/C_dynamic_memory_allocation) function.
+We need to expose a `malloc_Color` function in C-intermediate code to be able to call this from Raku.
 
 ```c
 Color* malloc_Color(unsigned char  r, unsigned char g, unsigned char b, unsigned char a) {
@@ -79,18 +81,19 @@ Color* malloc_Color(unsigned char  r, unsigned char g, unsigned char b, unsigned
    return ptr;
 }
 ```
-If you malloc you also need to free it, or else we get a memory leak.
-so we make another function to free the Color.
+If you malloc you also need to free it, or else we will memory leak.
+We need to expose another function for calling free on Color.
+
 ```c
 void free_Color(Color* ptr){
    free(ptr);
 }
 ```
 
-To make this more OO we supply the Color class with init method for mallocing it on the heap. 
-and for automatically freeing we can use the submethod DESTROY, this kicks in whenever the GC decides to collect the resource, it will also free the memory.
+To make this more Object-Oriented we supply the Color class with init method for mallocing it on the heap. 
+We handle freeing Color by using the submethod DESTROY, whenever the GC decides to collect the resource it will also free Color from the heap.
 
-```auto
+```php
 class Color is export is repr('CStruct') is rw {
     has uint8 $.r;
     has uint8 $.g;
@@ -105,7 +108,7 @@ class Color is export is repr('CStruct') is rw {
 }
 ```
 
-This intermediate C-code needs to also be compiled into the raylib library.
+The intermediate C-code ofcourse needs to also be compiled into the raylib library.
 
 ```
 gcc -g -fPIC intermediate-code.c -lraylib -o modified/libraylib.so
@@ -113,7 +116,7 @@ gcc -g -fPIC intermediate-code.c -lraylib -o modified/libraylib.so
 
 Let's try again:
 
-```
+```php
 ...
 # using the modified libraylib.so
 constant LIBRAYLIB = 'modified/libraylib.so';
@@ -134,20 +137,23 @@ Yes now it works as expected!
 ![White window](white-window.png)
 
 Phew!  
-All this work needs to be done for every functions that takes a value type or returning a value type, That's many since pointerized functions when looking at [raylib.h](https://github.com/raysan5/raylib/blob/master/src/raylib.h).
+All this work has to be done for every functions that is using value types. 
+Looking at [raylib.h](https://github.com/raysan5/raylib/blob/master/src/raylib.h).
+That's many functions!
 
-I think that's why nobody has made bindings for raylib, because it's way too tedious!!!
+Maybe that's a reason for why nobody has made bindings for raylib, because it's way too tedious!!!
 
-At that point I almost didn't bother working on it.
+At that point I wished that NativeCall would handle this us and almost didn't bother working on making the bindings.
 
 Then I had a great idea! Raku has Grammar support! What if I just parse the header file and automatically generate the bindings using the actions.
 
-This should be possible and so I began doing 
+### Generating bindings
 
-So I began defining the grammar for raylib keep in mind not for c, since that's a bigger task.
+So I began defining the grammar for raylib and not for C, since that's a bigger task.
 
+#### Grammar
 
-```raku
+```php
 grammar RaylibGrammar {
     token TOP {
         [ <defined-content> ]*
@@ -246,19 +252,21 @@ grammar RaylibGrammar {
 }
 ```
 
-The full [raylib grammar](https://github.com/vushu/raylib-raku/blob/main/lib/Raylib/Grammar.rakumod)
+Here is the full [raylib grammar](https://github.com/vushu/raylib-raku/blob/main/lib/Raylib/Grammar.rakumod)
 
-The action just has arrays of string for generating the raku bindings and the C-intermediate code.
+#### Actions
+Now we will define the Actions to handle the cases for converting C to Raku bindings.
 
-We just needed to make some cases for handling pointerization here is a simplified pointerization logic inside raylib-raku.
+Below is simplified pointerization logic which is extracted from in [raylib-raku](https://github.com/vushu/raylib-raku) module that I made.
+The [Actions](https://github.com/vushu/raylib-raku/blob/main/lib/Raylib/Actions.rakumod) just contain arrays of strings holding the 
+generated Raku bindings and the C-pointerized code.
 
-We need to pointerize a function if type is an identifier and has no pointer, by having this condition
-we deduce that the function returns a value type.
-Using raku multiple dispatch is a very clean way to handle this scenario.
+First we need to pointerize a function only if it's a value type. 
+So to deduce this `type` must be an identifier and `pointer` must be nil.
 
-Below is a very simplified example of what I do to generate pointerized function I do not guarantee that the code works :D
+Using Raku's [multiple dispatch](https://docs.raku.org/syntax/multi) and `where` clauses is a very slick way to handle different conditions.
 
-```
+```php
 multi method function($/ where $<type><identifier> && !$<pointer>) {
     my $return-type = ~$<type>;
     my $function-name = ~$<identifier>;
@@ -282,7 +290,13 @@ multi method function($/ where $<type><identifier> && !$<pointer>) {
     @raku-bindings.push($raku-func);
 }
 
-# defined map for c to raku types
+```
+
+Rest of the code basically handles strings creation according to the type and or if the parameter needs to get pointerized.
+
+```php
+
+# map for c to raku types
 has @.type-map = "int" => "int32", "float" => "num32", "double" => "num64", "short" => "int16", "char"  => "Str", "bool" => "bool", "void" => "void", "va_list" => "Str";
 
 method type($/) {
@@ -295,14 +309,16 @@ method type($/) {
     }
 }
 
+# Generating call to original function
 method create-call-func(@current-identifiers, $identifier) {
         my $call-func = $identifier ~ '(';
         for @current-identifiers.kv -> $idx, $ident {
             my $add-comma = $idx gt 0 ?? ', ' !! '';
-            # need to deref True of False?
+            # If it's a pointer then we must deref
             if ($ident[2]) {
                 $call-func ~= ($add-comma ~ "*$ident[1]");
             }
+            # No deref
             else {
                 $call-func ~= ($add-comma ~ "$ident[1]");
             }
@@ -311,7 +327,7 @@ method create-call-func(@current-identifiers, $identifier) {
         return $call-func;
 }
 
-# Creating pointerized parameters
+# Generating pointerized parameters
 method pointerize-parameters($parameters, @current-identifiers) {
         my $tail = "";
         # recursively calling pointerize-parameters on the rest 
@@ -320,7 +336,7 @@ method pointerize-parameters($parameters, @current-identifiers) {
             $tail = ',' ~ ' ' ~ $rest;
         }
 
-        # if is value type do pointerization
+        # if is value type, do pointerization.
         if ($parameters<type><identifier> && !$parameters<pointer>) {
             return "$($parameters<type>)* $parameters<identifier>" ~ $tail;
         }
@@ -328,37 +344,57 @@ method pointerize-parameters($parameters, @current-identifiers) {
             return "$($parameters<type>) $parameters<identifier>" ~ $tail;
         }
 }
+```
+Again using multiple dispatch and `where` makes it easy to handle different C-types.
 
-# made function for parameters turning them to raku types
+```php
+# Handling void
 multi method parameters($/ where $<pointer> && $<type> eq 'void') {
     make "Pointer[void] \$$<identifier>, {$<parameters>.map: *.made.join(',')}";
 }
 
+# Handling int
 multi method parameters($/ where $<pointer> && $<type> eq 'int') {
     make "int32 \$$<identifier> is rw, {$<parameters>.map: *.made.join(',')}";
 }
 
+# Handling char*
 multi method parameters($/ where $<pointer> && $<type> eq 'char' && !$<const>) {
     make "CArray[uint8] \$$<identifier>, {$<parameters>.map: *.made.join(',')}";
 }
-...
+
+etc...
 
 ```
+### Generated code
 
-The code above demonstrate how we use the grammar and action to deduce the code generatiing pointerized c-functions which was the most problematic case.
+The code above shows how we use the grammar and action to deduce the generating pointerized C-functions which was the most problematic case.
 
-Ofcourse we also need to generate make allocation function function, callbacks, const, unsigned int. I left those out since the post will be way to long to describe those.
+Ofcourse we also need to handle malloc and free, callbacks, const, unsigned integers, and more.
+I left those out since I think the the code above demonstrates that we can use grammar and action to handle tricky cases for creating Raku bindings.
 
 I took me about a week to finish the code generation logic.
+The generated Raku bindings are [here](https://github.com/vushu/raylib-raku/blob/main/lib/Raylib/Bindings.rakumod)
+and the generated C-pointerized-functions are [here](https://github.com/vushu/raylib-raku/blob/main/resources/raylib_pointerized_wrapper.c)
+.
 
-Generated raku bindings [raku-bindings](https://github.com/vushu/raylib-raku/blob/main/lib/Raylib/Bindings.rakumod)
-Generated c-intermediate code [pointerized-functions](https://github.com/vushu/raylib-raku/blob/main/resources/raylib_pointerized_wrapper.c)
+### Conclusion
 
-#### Conclusion
+Overall it was a success!
 
-By using grammar and actions we successfully made raylib available for raku 
-I took the liberty to add raku on the list of raylib bindings https://github.com/raysan5/raylib/blob/master/BINDINGS.md
-All in all it was an success visit https://github.com/vushu/raylib-raku if curious about the module.
+By using grammar and actions we overcame the painful task of manually making the bindings.
+
+Now Raku is also among the list of [raylib bindings](https://github.com/raysan5/raylib/blob/master/BINDINGS.md).  
+
+See https://github.com/vushu/raylib-raku if curious about the module.
+
+The code isn't my proudest piece of work, it was somewhat quick and dirty. My plan is to revise it and make the code generation re-useable.
+
+After making the bindings I actually made the [chip-8 emulator](https://github.com/vushu/chip-8-raku) as planned.
+
+Well that's it!
+
+Merry Christmas to you all!
 
 
 
